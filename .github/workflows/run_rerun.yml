@@ -137,7 +137,7 @@ jobs:
           COPERNICUS_S3_SECRETS: ${{ secrets.COPERNICUS_S3_SECRETS }}
           FSDI_STAC_USER: ${{ secrets.FSDI_STAC_USER }}
           FSDI_STAC_PASSWORD: ${{ secrets.FSDI_STAC_PASSWORD }}
-          HF_HUB_OFFLINE: "1"
+          #HF_HUB_OFFLINE: "1"
 
       - name: Push tools files to repo
         run: |
