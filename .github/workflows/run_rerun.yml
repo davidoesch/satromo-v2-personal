@@ -36,7 +36,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install light dependencies
-        run: pip install requests pandas shapely lxml hashlib importlib
+        run: pip install requests pandas shapely lxml
 
       - name: Get acquisition plan
         id: GetAcqui
