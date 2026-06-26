@@ -147,11 +147,15 @@ def _load_fsdi_items_url(config_name):
     config module (e.g. 'dev_config.py' or 'prod_config.py').
     Returns the URL string, or None on failure.
     """
-    config_name = config_name.replace(".py", "")
+    config_basename = config_name.replace(".py", "")
     repo_root = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, repo_root)
+    # configuration/__init__.py parses sys.argv on first import, so temporarily
+    # set argv to just the config filename to avoid it misreading our date/days args.
+    old_argv = sys.argv
+    sys.argv = [sys.argv[0], config_name]
     try:
-        cfg = importlib.import_module(f"configuration.{config_name}")
+        cfg = importlib.import_module(f"configuration.{config_basename}")
         step0_url = cfg.PRODUCT_S2_LEVEL_2A["step0_collection"]
         if "#/collections/" in step0_url:
             base_domain = step0_url.split("#")[0].rstrip("/")
@@ -163,6 +167,8 @@ def _load_fsdi_items_url(config_name):
     except Exception as e:
         print(f"  WARNING: could not load FSDI config from {config_name}: {e}")
         return None
+    finally:
+        sys.argv = old_argv
 
 
 def check_fsdi_published(date_str, fsdi_items_url):
