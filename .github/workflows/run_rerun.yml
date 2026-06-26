@@ -44,8 +44,8 @@ jobs:
             
       - name: Check S2 data availability and update CSV
         id: check
-        run: python check_s2_sr.py $(date +%Y-%m-%d) 30
-        #run: python check_s2_sr.py 2026-05-17 30
+        run: python check_s2_sr.py $(date +%Y-%m-%d) 30 dev_config.py
+        #run: python check_s2_sr.py 2026-05-17 30 dev_config.py
 
       - name: Publish acquisitionplan.csv and step0_empty_assets.csv
         id: PublishAcquiEmpty
