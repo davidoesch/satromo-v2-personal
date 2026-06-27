@@ -49,7 +49,6 @@ ACQUISITION_PLAN_FILE = os.path.join("tools", "acquisitionplan.csv")
 COLLECTION_NAME = "ch.swisstopo.swisseo_s2-sr_v200"
 
 REMARK_READY = "Tiles ready awaiting GPU system run"
-REMARK_PUBLISHED = "Published"
 REMARK_NO_CANDIDATE = "No candidate scene"
 REMARK_TILE_INCOMPLETE = "Tile upload incomplete"
 REMARK_DOWNLOAD_INCOMPLETE = "Tile download incomplete"
@@ -279,11 +278,7 @@ def update_csv(df, date_str, new_remark, non_valid_orbits):
     if len(existing) > 0:
         current_remark = str(existing.iloc[0]["remark"])
 
-        if REMARK_PUBLISHED in current_remark:
-            print(f"    {date_str}: already published, skipping")
-            return df, False
-
-        if REMARK_READY in current_remark and new_remark != REMARK_PUBLISHED:
+        if REMARK_READY in current_remark:
             print(f"    {date_str}: already marked ready, skipping")
             return df, False
 
@@ -387,11 +382,11 @@ def main():
         try:
             remark, non_valid_orbits = check_date(date_str, expected_orbit_count)
             suffix = f" (incomplete orbits: {sorted(non_valid_orbits)})" if non_valid_orbits else ""
-            print(f"  STAC result: {remark}{suffix}")
+            print(f"  CSDE STAC result: {remark}{suffix}")
             if remark == REMARK_READY and fsdi_items_url:
                 if check_fsdi_published(date_str, fsdi_items_url):
-                    print(f"  FSDI check: items already published for {date_str} — marking as '{REMARK_PUBLISHED}'")
-                    remark = REMARK_PUBLISHED
+                    print(f"  FSDI check: items already published for {date_str} — skipping CSV update")
+                    continue
                 else:
                     print(f"  FSDI check: no items yet for {date_str} — will trigger processing")
             df, _ = update_csv(df, date_str, remark, non_valid_orbits)
