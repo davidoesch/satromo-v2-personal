@@ -385,10 +385,10 @@ def main():
             print(f"  CSDE STAC result: {remark}{suffix}")
             if remark == REMARK_READY and fsdi_items_url:
                 if check_fsdi_published(date_str, fsdi_items_url):
-                    print(f"  FSDI check: items already published for {date_str} — skipping CSV update")
+                    print(f"  FSDI STAC check: items already published for {date_str} — skipping CSV update")
                     continue
                 else:
-                    print(f"  FSDI check: no items yet for {date_str} — will trigger processing")
+                    print(f"  FSDI STAC check: no items yet for {date_str} — will trigger processing")
             df, _ = update_csv(df, date_str, remark, non_valid_orbits)
         except Exception as e:
             print(f"  ERROR: {e}")
