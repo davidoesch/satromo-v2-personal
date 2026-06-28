@@ -385,7 +385,15 @@ def main():
             print(f"  CSDE STAC result: {remark}{suffix}")
             if remark == REMARK_READY and fsdi_items_url:
                 if check_fsdi_published(date_str, fsdi_items_url):
-                    print(f"  FSDI STAC check: items already published for {date_str} — skipping CSV update")
+                    print(f"  FSDI STAC check: items already published for {date_str} — skipping")
+                    stale_mask = (
+                        (df["collection"] == COLLECTION_NAME)
+                        & (df["date"] == date_str)
+                        & df["remark"].str.contains(REMARK_READY, na=False)
+                    )
+                    if stale_mask.any():
+                        df = df[~stale_mask]
+                        print(f"    {date_str}: removed stale READY entry from CSV")
                     continue
                 else:
                     print(f"  FSDI STAC check: no items yet for {date_str} — will trigger processing")
