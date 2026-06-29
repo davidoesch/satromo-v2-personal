@@ -187,7 +187,7 @@ def main():
     else:
         config_file = 'dev_config.py'
 
-    days_back = 30
+    days_back = 100
     collection = config.PRODUCT_S2_LEVEL_2A['step0_collection'].rsplit('/', 1)[-1]
 
     result = process_empty_asset_list(collection, days_back, config_file)
