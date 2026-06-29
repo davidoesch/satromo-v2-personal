@@ -141,8 +141,8 @@ ch.swisstopo.swisseo_s2-sr_v200,2025-12-13,Tile download incomplete
 ch.swisstopo.swisseo_s2-sr_v200,2025-12-14,Tile download incomplete
 ch.swisstopo.swisseo_s2-sr_v200,2025-12-15,No candidate scene
 ch.swisstopo.swisseo_s2-sr_v200,2025-12-17,Tile download incomplete
-ch.swisstopo.swisseo_s2-sr_v200,2025-12-19,Tile download incomplete
-ch.swisstopo.swisseo_s2-sr_v200,2025-12-20,Tile upload incomplete
+ch.swisstopo.swisseo_s2-sr_v200,2025-12-19,Tiles ready awaiting GPU system run
+ch.swisstopo.swisseo_s2-sr_v200,2025-12-20,Tile upload incomplete: [22]
 ch.swisstopo.swisseo_s2-sr_v200,2025-12-22,cloudy
 ch.swisstopo.swisseo_s2-sr_v200,2025-12-25,No candidate scene
 ch.swisstopo.swisseo_s2-sr_v200,2024-01-02,cloudy
@@ -373,3 +373,4 @@ ch.swisstopo.swisseo_s2-sr_v200,2026-06-13,No candidate scene
 ch.swisstopo.swisseo_s2-sr_v200,2026-06-23,No candidate scene
 ch.swisstopo.swisseo_s2-sr_v200,2026-06-29,No candidate scene
 ch.swisstopo.swisseo_s2-sr_v200,2020-03-28,Tiles ready awaiting GPU system run
+ch.swisstopo.swisseo_s2-sr_v200,2026-03-29,Tiles ready awaiting GPU system run
