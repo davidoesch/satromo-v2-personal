@@ -1,8 +1,10 @@
-import rasterio
-import xarray as xr
-import rioxarray
-from pystac_client import Client
 import os
+os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR" # to avoid unnecessary directory listing on S3 (needs to be before rasterio import)
+import re
+import json
+import socket
+import xarray as xr
+from pystac_client import Client
 import numpy as np
 import configuration as config
 from datetime import datetime, timedelta
@@ -11,6 +13,7 @@ from rasterio.windows import from_bounds
 from rasterio.enums import Resampling
 from rasterio.warp import reproject, Resampling, transform_bounds
 from affine import Affine
+from pathlib import Path
 from main_functions import main_utils, main_publish_stac_fsdi, main_extract_warnregions, main_thumbnails
 
 ##############################
@@ -61,6 +64,8 @@ def process_product_vhi(
   
     ##############################
     # CONFIGURATION / PARAMETERS
+    vhi_version = "v200"
+
     # Paths
     stac_swisstopo, s2_sr_collection_id = config.PRODUCT_VHI['step0_collection'].split('#/collections/')
     stac_swisstopo_version = 'api/stac/v0.9/'
@@ -166,7 +171,7 @@ def process_product_vhi(
             window, src_transform = get_window_and_transform(src, roi)
             if src_transform is None:  # no overlap
                 return np.full(target_shape, fill_value=np.nan, dtype=np.float32)
-            data = src.read(1, window=window, out_dtype=np.float32)
+            data = src.read(1, window=window, out_dtype=np.float32, boundless=True, fill_value=nodata)
             src_crs = src.crs 
         
         # Reproject onto the fixed 10m reference grid
@@ -227,7 +232,7 @@ def process_product_vhi(
             window, src_transform = get_window_and_transform(src, roi)
             if src_transform is None:
                 return np.full(target_shape, fill_value=np.nan, dtype=np.float32)
-            data_20m = src.read(1, window=window, out_dtype=np.float32)
+            data_20m = src.read(1, window=window, out_dtype=np.float32, boundless=True, fill_value=nodata)
             src_crs = src.crs  
         
         # Resample to 10m grid (start with nan filled array to guarantee matching output shape and nodata handling)
@@ -333,34 +338,27 @@ def process_product_vhi(
     s2_sr_items_sorted = [item for item in s2_sr_items_sorted if item_covers_roi(item, roi)]
 
     if len(s2_sr_items_sorted) == 0:
-        raise ValueError(f'No S2-SR items found for the time window {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} and the specified ROI.')
+        raise ValueError(f"No S2-SR items found for the time window {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} and the specified ROI.")
     else:
-        print(f'Found {len(s2_sr_items_sorted)} items in time window {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} and the specified ROI.')
+        print(f"Found {len(s2_sr_items_sorted)} items in time window {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} and the specified ROI.")
         print(f'Starting the VHI calculation for {current_date_str}')
 
     # NDVI calculation and combining them to always take the newest value per pixel
-
-    # Resolve ROI and establish 10m grid ONCE before the loop
-    first_item = s2_sr_items_sorted[0]
-    first_item_path = stac_swisstopo + s2_sr_collection_id + '/' + first_item.id + '/swisseo_s2-sr_v200_mosaic_' + first_item.id
-    first_red_path = first_item_path + '_b04_10m.tif'
-
-    if roi is None:
-        roi = bbox_ch
-
-    with rasterio.open(first_red_path) as src:
-        window_10m = from_bounds(*roi, src.transform)
-        target_transform = src.window_transform(window_10m)
-        target_shape = (int(window_10m.height), int(window_10m.width))
-
     ndvi_combined = None
-
     NDVI_index_list = []
+
     for item in s2_sr_items_sorted:
     # Get file paths for required bands
         item_path = stac_swisstopo + s2_sr_collection_id + '/' + item.id + '/swisseo_s2-sr_v200_mosaic_' + item.id
         red_path = item_path + '_b04_10m.tif'
         nir_path = item_path + '_b08_10m.tif'
+        if roi is None:
+            roi = bbox_ch
+
+        with rasterio.open(red_path) as src:
+            window_10m = from_bounds(*roi, src.transform)
+            target_transform = src.window_transform(window_10m)
+            target_shape = (int(window_10m.height), int(window_10m.width))
 
         # Load 10 m bands and apply offset and scale factor to reflectance bands
         red = load_and_scale_band(red_path, roi, target_transform, target_shape)
@@ -381,7 +379,7 @@ def process_product_vhi(
             if src_transform is None:
                 cloud_mask = np.full(target_shape, dtype=np.uint8)  # treat as cloud-free if no overlap
             else:
-                data = src_cloud.read(1, window=window)
+                data = src_cloud.read(1, window=window, boundless=True, fill_value=0)
                 src_crs = src_cloud.crs
                 cloud_mask_f = np.full(target_shape, fill_value=1, dtype=np.float32)
                 reproject(
@@ -404,7 +402,7 @@ def process_product_vhi(
             if src_transform is None:
                 illumination_mask = np.full(target_shape, dtype=np.uint8)  # treat as no shadow if no overlap
             else:
-                data = src_illumination.read(1, window=window)
+                data = src_illumination.read(1, window=window, boundless=True, fill_value=0)
                 src_crs = src_illumination.crs
                 illumination_mask_f = np.full(target_shape, fill_value=1, dtype=np.float32)
                 reproject(
@@ -479,7 +477,7 @@ def process_product_vhi(
     ##############################
     # INPUT DATA: REFERENCE NDVI
     # Load or compute long-term NDVI statistics for climate reference period (1991-2020)
-    s3_path_ndvi_ref = f'{config.PRODUCT_VHI['NDVI_reference_data']}NDVI_Stats_DOY{doy_str}.tif'
+    s3_path_ndvi_ref = f"{config.PRODUCT_VHI['NDVI_reference_data']}NDVI_Stats_DOY{doy_str}.tif"
 
     with rasterio.open(s3_path_ndvi_ref) as src_ref:
         # Define window from ROI
@@ -513,7 +511,7 @@ def process_product_vhi(
         
         with rasterio.open(filepath) as src:
             window = from_bounds(*roi, src.transform)
-            data = src.read(band_num, window=window, out_dtype=np.float32)
+            data = src.read(band_num, window=window, out_dtype=np.float32, boundless=True, fill_value=nodata)
             src_transform = src.window_transform(window)
             src_crs = src.crs
         
@@ -568,19 +566,15 @@ def process_product_vhi(
     ############################################################
     # INPUT DATA: TEMPERATURE
     # Load surface downwelling longwave radiation (SDL) and surface outgoing longwave radiation (SOL) data for the specific date
-    # TODO: update elif part to include Feb 2026 after delivery from MCH
     if current_date < datetime(2024, 1, 1):
-        sdl_path = f'{config.PRODUCT_VHI['LST_current_data']}/MSG2004-2023/msg.SDL.H_ch02.lonlat_{year}{month}01000000.nc'
-        sol_path = f'{config.PRODUCT_VHI['LST_current_data']}/MSG2004-2023/msg.SOL.H_ch02.lonlat_{year}{month}01000000.nc'
+        sdl_path = f"{config.PRODUCT_VHI['LST_current_data']}/MSG2004-2023/msg.SDL.H_ch02.lonlat_{year}{month}01000000.nc"
+        sol_path = f"{config.PRODUCT_VHI['LST_current_data']}/MSG2004-2023/msg.SOL.H_ch02.lonlat_{year}{month}01000000.nc"
     elif current_date >= datetime(2024, 1, 1) and current_date < datetime(2026, 4, 1):
-        sdl_path = f'{config.PRODUCT_VHI['LST_current_data']}/MSG2024-2026/msg.SDL.H_ch02.lonlat_{year}{month}01000000.nc'
-        sol_path = f'{config.PRODUCT_VHI['LST_current_data']}/MSG2024-2026/msg.SOL.H_ch02.lonlat_{year}{month}01000000.nc'
+        sdl_path = f"{config.PRODUCT_VHI['LST_current_data']}/MSG2024-2026/msg.SDL.H_ch02.lonlat_{year}{month}01000000.nc"
+        sol_path = f"{config.PRODUCT_VHI['LST_current_data']}/MSG2024-2026/msg.SOL.H_ch02.lonlat_{year}{month}01000000.nc"
     else:
-        sdl_path = f'{config.PRODUCT_VHI['LST_current_data']}/msg.SDL.H_ch02.lonlat_{year}{month}{day}000000.nc'
-        sol_path = f'{config.PRODUCT_VHI['LST_current_data']}/msg.SOL.H_ch02.lonlat_{year}{month}{day}000000.nc'
-
-    ds_sdl = xr.open_dataset(sdl_path, engine='h5netcdf')
-    ds_sol = xr.open_dataset(sol_path, engine='h5netcdf')
+        sdl_path = f"{config.PRODUCT_VHI['LST_current_data']}/msg.SDL.H_ch02.lonlat_{year}{month}{day}000000.nc"
+        sol_path = f"{config.PRODUCT_VHI['LST_current_data']}/msg.SOL.H_ch02.lonlat_{year}{month}{day}000000.nc"
 
     ##############################
     # CALCULATE LST
@@ -659,112 +653,116 @@ def process_product_vhi(
         
         return ds_output
 
-    ds_11am = calc_LST_for_date(ds_sol, ds_sdl, current_date_str, aggregation='hour', hour=11)
+    
+    with xr.open_dataset(sdl_path, engine='h5netcdf') as ds_sdl, \
+         xr.open_dataset(sol_path, engine='h5netcdf') as ds_sol:
 
-    LST_index_list = f'MSG_METEOSWISS_ALLSKY_mosaic_{current_date_str}T11000000_bands-1721m'
-    LST_scene_count = 1
+        ds_11am = calc_LST_for_date(ds_sol, ds_sdl, current_date_str, aggregation='hour', hour=11)
 
-    # Function to resample LST data from lat/lon grid to match Sentinel-2 10m grid in EPSG:2056
-    def resample_lst_to_s2_grid(ds_lst, var_name, target_transform, target_shape, target_crs='EPSG:2056'):
-        """
-        Resample LST data from lat/lon grid to match Sentinel-2 10m grid in EPSG:2056.
-        
-        Parameters:
-        -----------
-        ds_lst : xarray.Dataset
-            LST dataset with lat/lon coordinates
-        var_name : str
-            Name of the LST variable to resample (e.g., 'LST_mean', 'LST_max', 'LST_hour11')
-        target_transform : affine.Affine
-            Target transform from Sentinel-2 10m grid
-        target_shape : tuple
-            Target shape (height, width) from Sentinel-2 10m grid
-        target_crs : str
-            Target CRS (default: 'EPSG:2056')
-        
-        Returns:
-        --------
-        numpy.ndarray
-            Resampled LST array on 10m grid
-        """
-        # Extract LST data
-        lst_data = ds_lst[var_name].values
-        
-        # Get lat/lon coordinates
-        lats = ds_lst.lat.values
-        lons = ds_lst.lon.values
-        
-        # Determine if coordinates are ascending or descending
-        lat_ascending = lats[1] > lats[0] if len(lats) > 1 else False
-        lon_ascending = lons[1] > lons[0] if len(lons) > 1 else False
-        
-        # Calculate pixel resolution (always positive)
-        lat_res = abs(lats[1] - lats[0]) if len(lats) > 1 else abs(lats[-1] - lats[-2])
-        lon_res = abs(lons[1] - lons[0]) if len(lons) > 1 else abs(lons[-1] - lons[-2])
-        
-        # Get the top-left corner coordinates
-        # For latitude: if descending (typical), use first value; if ascending, use last value
-        # For longitude: if ascending (typical), use first value; if descending, use last value
-        top_lat = lats[0] if not lat_ascending else lats[-1]
-        left_lon = lons[0] if lon_ascending else lons[-1]
-        
-        # Create affine transform for source (LST in lat/lon)
-        # The transform should point to the top-left corner and use negative lat_res
-        src_transform = Affine.translation(left_lon - lon_res/2, top_lat + lat_res/2) * Affine.scale(lon_res, -lat_res)
-        
-        # Flip data if needed to match standard rasterio orientation (top-to-bottom, left-to-right)
-        if not lat_ascending:
-            # Data is already top-to-bottom, just ensure it's correct
-            lst_data_oriented = lst_data
-        else:
-            # Flip vertically to go from bottom-to-top to top-to-bottom
-            lst_data_oriented = np.flipud(lst_data)
-        
-        if not lon_ascending:
-            # Flip horizontally to go from right-to-left to left-to-right
-            lst_data_oriented = np.fliplr(lst_data_oriented)
-        
-        # Prepare output array
-        lst_resampled = np.empty(target_shape, dtype=np.float32)
-        
-        # Reproject from EPSG:4326 (lat/lon) to EPSG:2056 (Swiss grid)
-        reproject(
-            source=lst_data_oriented.astype(np.float32),
-            destination=lst_resampled,
-            src_transform=src_transform,
-            src_crs='EPSG:4326',
-            dst_transform=target_transform,
-            dst_crs=target_crs,
-            resampling=Resampling.nearest,
-            src_nodata=np.nan,
-            dst_nodata=np.nan
-        )
-        
-        return lst_resampled
+        LST_index_list = f'MSG_METEOSWISS_ALLSKY_mosaic_{current_date_str}T11000000_bands-1721m'
+        LST_scene_count = 1
 
-    # Use it after calculating LST
-    lst_11am_10m = resample_lst_to_s2_grid(ds_11am, 'LST_hour11', target_transform, target_shape)
+        # Function to resample LST data from lat/lon grid to match Sentinel-2 10m grid in EPSG:2056
+        def resample_lst_to_s2_grid(ds_lst, var_name, target_transform, target_shape, target_crs='EPSG:2056'):
+            """
+            Resample LST data from lat/lon grid to match Sentinel-2 10m grid in EPSG:2056.
+            
+            Parameters:
+            -----------
+            ds_lst : xarray.Dataset
+                LST dataset with lat/lon coordinates
+            var_name : str
+                Name of the LST variable to resample (e.g., 'LST_mean', 'LST_max', 'LST_hour11')
+            target_transform : affine.Affine
+                Target transform from Sentinel-2 10m grid
+            target_shape : tuple
+                Target shape (height, width) from Sentinel-2 10m grid
+            target_crs : str
+                Target CRS (default: 'EPSG:2056')
+            
+            Returns:
+            --------
+            numpy.ndarray
+                Resampled LST array on 10m grid
+            """
+            # Extract LST data
+            lst_data = ds_lst[var_name].values
+            
+            # Get lat/lon coordinates
+            lats = ds_lst.lat.values
+            lons = ds_lst.lon.values
+            
+            # Determine if coordinates are ascending or descending
+            lat_ascending = lats[1] > lats[0] if len(lats) > 1 else False
+            lon_ascending = lons[1] > lons[0] if len(lons) > 1 else False
+            
+            # Calculate pixel resolution (always positive)
+            lat_res = abs(lats[1] - lats[0]) if len(lats) > 1 else abs(lats[-1] - lats[-2])
+            lon_res = abs(lons[1] - lons[0]) if len(lons) > 1 else abs(lons[-1] - lons[-2])
+            
+            # Get the top-left corner coordinates
+            # For latitude: if descending (typical), use first value; if ascending, use last value
+            # For longitude: if ascending (typical), use first value; if descending, use last value
+            top_lat = lats[0] if not lat_ascending else lats[-1]
+            left_lon = lons[0] if lon_ascending else lons[-1]
+            
+            # Create affine transform for source (LST in lat/lon)
+            # The transform should point to the top-left corner and use negative lat_res
+            src_transform = Affine.translation(left_lon - lon_res/2, top_lat + lat_res/2) * Affine.scale(lon_res, -lat_res)
+            
+            # Flip data if needed to match standard rasterio orientation (top-to-bottom, left-to-right)
+            if not lat_ascending:
+                # Data is already top-to-bottom, just ensure it's correct
+                lst_data_oriented = lst_data
+            else:
+                # Flip vertically to go from bottom-to-top to top-to-bottom
+                lst_data_oriented = np.flipud(lst_data)
+            
+            if not lon_ascending:
+                # Flip horizontally to go from right-to-left to left-to-right
+                lst_data_oriented = np.fliplr(lst_data_oriented)
+            
+            # Prepare output array
+            lst_resampled = np.empty(target_shape, dtype=np.float32)
+            
+            # Reproject from EPSG:4326 (lat/lon) to EPSG:2056 (Swiss grid)
+            reproject(
+                source=lst_data_oriented.astype(np.float32),
+                destination=lst_resampled,
+                src_transform=src_transform,
+                src_crs='EPSG:4326',
+                dst_transform=target_transform,
+                dst_crs=target_crs,
+                resampling=Resampling.nearest,
+                src_nodata=np.nan,
+                dst_nodata=np.nan
+            )
+            
+            return lst_resampled
 
-    # Extract the data arrays and convert from Kelvin to Celsius
-    lst_11am = lst_11am_10m - 273.15
-    print(f'Calculated LST (using the aggregation method "{lst_aggregation}")')
+        # Use it after calculating LST
+        lst_11am_10m = resample_lst_to_s2_grid(ds_11am, 'LST_hour11', target_transform, target_shape)
+
+        # Extract the data arrays and convert from Kelvin to Celsius
+        lst_11am = lst_11am_10m - 273.15
+        print(f'Calculated LST (using the aggregation method "{lst_aggregation}")')
 
     ##############################
     # INPUT DATA: REFERENCE LST
     # Load or compute long-term LST statistics for climate reference period (1991-2020)
-    s3_path_lst_ref = f'{config.PRODUCT_VHI['LST_reference_data']}LST_statistics_DOY{doy_str}{lst_ref_file}.nc'
-    ds_lst_ref = xr.open_dataset(s3_path_lst_ref, engine='h5netcdf', storage_options={'anon': True})
-    print('Loaded reference LST statistics for current day of year')
+    s3_path_lst_ref = f"{config.PRODUCT_VHI['LST_reference_data']}LST_statistics_DOY{doy_str}{lst_ref_file}.nc"
+    with xr.open_dataset(s3_path_lst_ref, engine='h5netcdf', storage_options={'anon': True}) as ds_lst_ref:
+        print('Loaded reference LST statistics for current day of year')
 
-    # Read relevant bands based on the chosen method
-    if workWithPercentiles is True:
-        lst_ref_10m_min = resample_lst_to_s2_grid(ds_lst_ref, f'LST_{lst_aggregation}_p05', target_transform, target_shape)  # 5th percentile
-        lst_ref_10m_max = resample_lst_to_s2_grid(ds_lst_ref, f'LST_{lst_aggregation}_p95', target_transform, target_shape)  # 95th percentile
-        print('- Using percentiles for TCI calculation')
-    else:
-        lst_ref_10m_min = resample_lst_to_s2_grid(ds_lst_ref, f'LST_{lst_aggregation}_min', target_transform, target_shape)  # minimum
-        lst_ref_10m_max = resample_lst_to_s2_grid(ds_lst_ref, f'LST_{lst_aggregation}_max', target_transform, target_shape)  # maximum
-        print('- Using min and max for TCI calculation')
+        # Read relevant bands based on the chosen method
+        if workWithPercentiles is True:
+            lst_ref_10m_min = resample_lst_to_s2_grid(ds_lst_ref, f'LST_{lst_aggregation}_p05', target_transform, target_shape)  # 5th percentile
+            lst_ref_10m_max = resample_lst_to_s2_grid(ds_lst_ref, f'LST_{lst_aggregation}_p95', target_transform, target_shape)  # 95th percentile
+            print('- Using percentiles for TCI calculation')
+        else:
+            lst_ref_10m_min = resample_lst_to_s2_grid(ds_lst_ref, f'LST_{lst_aggregation}_min', target_transform, target_shape)  # minimum
+            lst_ref_10m_max = resample_lst_to_s2_grid(ds_lst_ref, f'LST_{lst_aggregation}_max', target_transform, target_shape)  # maximum
+            print('- Using min and max for TCI calculation')
 
     ##############################
     # CALCULATE TCI
@@ -812,6 +810,7 @@ def process_product_vhi(
         'SWISSTOPO_PROCESSOR': processor_version['GithubLink'],
         'SWISSTOPO_RELEASE_VERSION': processor_version['ReleaseVersion'],
         'collection': collection,
+        'VHI_version': vhi_version,
         'system:time_start': start_date,
         'system:time_end': (end_date - timedelta(seconds=1)), 
         'NDVI_reference_data': config.PRODUCT_VHI['NDVI_reference_data'],
@@ -842,7 +841,7 @@ def process_product_vhi(
     # Forest mask
     with rasterio.open(s3_path_forest_mask) as src_veg:
         window = from_bounds(*roi, src_veg.transform)
-        data_veg = src_veg.read(1, window=window)
+        data_veg = src_veg.read(1, window=window, boundless=True, fill_value=0)
         src_transform_veg = src_veg.window_transform(window)
         src_crs_veg = src_veg.crs
 
@@ -864,7 +863,7 @@ def process_product_vhi(
     # Vegetation mask
     with rasterio.open(s3_path_vegetation_mask) as src_veg:
         window = from_bounds(*roi, src_veg.transform)
-        data_veg = src_veg.read(1, window=window)
+        data_veg = src_veg.read(1, window=window, boundless=True, fill_value=0)
         src_transform_veg = src_veg.window_transform(window)
         src_crs_veg = src_veg.crs
 
@@ -920,7 +919,7 @@ def process_product_vhi(
     dateISO8601 = f'{current_date_str}T235959Z'
 
     # Create warnregions for forest areas
-    warnregionfilename_forest = f'{filename_forest}_warnregions'
+    warnregionfilename_forest = f'{product_name.replace("ch.swisstopo.", "")}_{timestamp}_forest-warnregions'
     main_extract_warnregions.export(
         f'{filename_forest}.tif',
         warnregions,
@@ -929,12 +928,12 @@ def process_product_vhi(
         config.PRODUCT_VHI['missing_data'],
         config.PRODUCT_VHI['no_data'],
         config.PRODUCT_VHI['scaling_factor'],
-        'forest'
+        'vhi'
     )
     print(f'Created warnregions for forest areas')
 
     # Create warnregions for vegetation areas
-    warnregionfilename_vegetation = f'{filename_vegetation}_warnregions'
+    warnregionfilename_vegetation = f'{product_name.replace("ch.swisstopo.", "")}_{timestamp}_vegetation-warnregions'
     main_extract_warnregions.export(
         f'{filename_vegetation}.tif',
         warnregions,
@@ -943,16 +942,133 @@ def process_product_vhi(
         config.PRODUCT_VHI['missing_data'],
         config.PRODUCT_VHI['no_data'],
         config.PRODUCT_VHI['scaling_factor'],
-        'vegetation'
+        'vhi'
     )
     print(f'Created warnregions for vegetation areas')
 
+
     ##############################
     # METADATA FILE AND THUMBNAIL
-    #TODO
-
     # Create thumbnail
     filename_thumbnail = main_thumbnails.create_thumbnail(f'{filename_vegetation}.tif', config.PRODUCT_VHI['product_name'])
+    
+    # Create metadata file
+    def create_vhi_metadata_json(
+        vhi,
+        filename_forest,
+        filename_vegetation,
+        warnregionfilename_forest,
+        warnregionfilename_vegetation,
+        warnformats,
+        timestamp,
+        current_date_str,
+        processor_version,
+        config,
+    ):
+        """
+        Build and write a JSON metadata file for VHI v200, mirroring the v100 structure.
+        Returns the filename of the written file.
+        """
+        attrs = vhi.attrs
+        item_label = timestamp.upper()
+        processing_date_utc = f"{current_date_str}T235959Z"
+        hostname = socket.gethostname()
+
+        def raster_band_info(tif_filename):
+            try:
+                with rasterio.open(f"{tif_filename}.tif") as src:
+                    return [{
+                        "id": "vhi",
+                        "data_type": {"type": "PixelType", "precision": "int", "min": 0, "max": 255},
+                        "dimensions": [src.width, src.height],
+                        "crs": str(src.crs),
+                        "crs_transform": [
+                            src.transform.a, src.transform.b, src.transform.c,
+                            src.transform.d, src.transform.e, src.transform.f,
+                        ],
+                    }]
+            except Exception:
+                return []
+
+        def raster_entry(asset_filename, geocat_id):
+            return {
+                "BANDS": raster_band_info(asset_filename),
+                "PROPERTIES": {
+                    "PRODUCT": config.PRODUCT_VHI['product_name'],
+                    "ITEM": item_label,
+                    "ASSET": asset_filename,
+                    "DATEITEMGENERATION": current_date_str,
+                    "PROCESSORHASHLINK": processor_version['GithubLink'],
+                    "PROCESSORRELEASEVERSION": processor_version['ReleaseVersion'],
+                    "GEOCATID": geocat_id,
+                    "PROCESSING_DATE_UTC": processing_date_utc,
+                    "PROCESSING_HOSTNAME": hostname,
+                    "VHI_VERSION": vhi_version,
+                    "DOY": attrs.get('doy'),
+                    "ALPHA": attrs.get('alpha'),
+                    "TEMPORAL_COVERAGE": attrs.get('temporal_coverage'),
+                    "NDVI_REFERENCE_DATA": attrs.get('NDVI_reference_data'),
+                    "NDVI_INDEX_LIST": attrs.get('NDVI_index_list'),
+                    "NDVI_SCENE_COUNT": attrs.get('NDVI_scene_count'),
+                    "LST_REFERENCE_DATA": attrs.get('LST_reference_data'),
+                    "LST_INDEX_LIST": attrs.get('LST_index_list'),
+                    "LST_SCENE_COUNT": attrs.get('LST_scene_count'),
+                    "VCI_AND_TCI_CALCULATED_WITH": attrs.get('VCI_and_TCI_calculated_with'),
+                    "NO_DATA": attrs.get('no_data'),
+                    "MISSING_DATA": attrs.get('missing_data'),
+                    "PIXEL_SIZE_METER": attrs.get('pixel_size_meter'),
+                    "SYSTEM_TIME_START": str(attrs.get('system:time_start')),
+                    "SYSTEM_TIME_END": str(attrs.get('system:time_end')),
+                },
+            } 
+
+        def warnregion_entry(warnregion_filename, source_tif, fmt):
+            return {
+                "PRODUCT": config.PRODUCT_VHI['product_name'],
+                "ITEM": item_label,
+                "ASSET": f"{warnregion_filename}{fmt}",
+                "SOURCE": f"{source_tif}.tif",
+                "VHI_VERSION": vhi_version,
+                "format": fmt,
+                "regionId": "RegionID",
+                "vhiMean": "VHI Mean Region",
+                "availabilityPercentage": "percentage of available pixels with information within region",
+            }
+
+        metadata = {}
+
+        metadata["FOREST-10M"] = raster_entry(filename_forest, config.PRODUCT_VHI['geocat_id_forest'])
+        for fmt in warnformats:
+            key = f"FOREST-WARNREGIONS{fmt.replace('.', '-').upper()}"
+            metadata[key] = warnregion_entry(warnregionfilename_forest, filename_forest, fmt)
+
+        metadata["VEGETATION-10M"] = raster_entry(filename_vegetation, config.PRODUCT_VHI['geocat_id_vegetation'])
+        for fmt in warnformats:
+            key = f"VEGETATION-WARNREGIONS{fmt.replace('.', '-').upper()}"
+            metadata[key] = warnregion_entry(warnregionfilename_vegetation, filename_vegetation, fmt)
+
+        filename_metadata = (
+            f"{config.PRODUCT_VHI['product_name'].replace('ch.swisstopo.', '')}"
+            f"_mosaic_{timestamp}_metadata.json"
+        )
+        with open(filename_metadata, "w") as f:
+            json.dump(metadata, f, indent=2, default=str)
+
+        print(f"Created metadata JSON: {filename_metadata}")
+        return filename_metadata
+    
+    filename_metadata = create_vhi_metadata_json(
+        vhi=vhi,
+        filename_forest=filename_forest,
+        filename_vegetation=filename_vegetation,
+        warnregionfilename_forest=warnregionfilename_forest,
+        warnregionfilename_vegetation=warnregionfilename_vegetation,
+        warnformats=warnformats,
+        timestamp=timestamp,
+        current_date_str=current_date_str,
+        processor_version=processor_version,
+        config=config,
+    )
 
     ##############################
     # EXPORT VHI
@@ -997,7 +1113,10 @@ def process_product_vhi(
             'filename': warnregionfilename_vegetation + fmt
         })
 
-    # Export forest-masked VHI and warnregions for forest areas
+    # Check if current, if yes then run upload below twice a day
+    is_current = main_utils.extract_and_compare_datetime_from_url(f"{config.STAC_FSDI_SCHEME}://{config.STAC_FSDI_HOSTNAME}{config.STAC_FSDI_API}collections/{collection.split('/')[-1]}/items/{collection.split('/')[-1].replace('swisstopo.', '').replace('ch.', '')}",timestamp)
+
+    # Export VHI and warnregions for forest areas
     for file_info in file_list_forest:
         band = file_info['band']
         filename = file_info['filename']
@@ -1005,61 +1124,76 @@ def process_product_vhi(
         # STAC Upload
         main_publish_stac_fsdi.publish_to_stac(filename, timestamp, config.PRODUCT_VHI['product_name'], 
                                                config.PRODUCT_VHI['geocat_id_forest'], None, asset_title=band)
-        # if is_current == True:
-        #     print("Newest dataset detected: updating CURRENT")
-        #     filename_current = re.sub(r'\d{4}-\d{2}-\d{2}t\d{6}', 'current', filename)
-        #     # Rename the file
-        #     os.rename(filename, filename_current)
-        #     main_publish_stac_fsdi.publish_to_stac(filename_current,timestamp,config.PRODUCT_VHI['product_name'],config.PRODUCT_VHI['geocat_id_forest'],asset_title=band, current=True)
-        #     os.rename(filename_current, filename)
+        if is_current == True:
+            print("Newest dataset detected: updating CURRENT")
+            filename_current = re.sub(r'\d{4}-\d{2}-\d{2}t\d{6}', 'current', filename)
+            # Rename the file
+            os.rename(filename, filename_current)
+            main_publish_stac_fsdi.publish_to_stac(filename_current, timestamp, config.PRODUCT_VHI['product_name'],
+                                                   config.PRODUCT_VHI['geocat_id_forest'], asset_title=band, current=True)
+            os.rename(filename_current, filename)
 
-    # Export forest-masked VHI and warnregions for vegetation areas
+    # Export VHI and warnregions for vegetation areas
     for file_info in file_list_vegetation:
         band = file_info['band']
         filename = file_info['filename']
 
         # STAC Upload
         main_publish_stac_fsdi.publish_to_stac(filename, timestamp, config.PRODUCT_VHI['product_name'], 
-                                               config.PRODUCT_VHI['geocat_id_forest'], None, asset_title=band)
-        # if is_current == True:
-        #     print("Newest dataset detected: updating CURRENT")
-        #     filename_current = re.sub(r'\d{4}-\d{2}-\d{2}t\d{6}', 'current', filename)
-        #     # Rename the file
-        #     os.rename(filename, filename_current)
-        #     main_publish_stac_fsdi.publish_to_stac(filename_current,timestamp,config.PRODUCT_VHI['product_name'],config.PRODUCT_VHI['geocat_id_forest'],asset_title=band, current=True)
-        #     os.rename(filename_current, filename)
+                                               config.PRODUCT_VHI['geocat_id_vegetation'], None, asset_title=band)
+        if is_current == True:
+            print("Newest dataset detected: updating CURRENT")
+            filename_current = re.sub(r'\d{4}-\d{2}-\d{2}t\d{6}', 'current', filename)
+            # Rename the file
+            os.rename(filename, filename_current)
+            main_publish_stac_fsdi.publish_to_stac(filename_current, timestamp, config.PRODUCT_VHI['product_name'],
+                                                   config.PRODUCT_VHI['geocat_id_vegetation'], asset_title=band, current=True)
+            os.rename(filename_current, filename)
 
     # Upload metadata file
-    # filename=f"{config.PRODUCT_VHI['product_name'].replace('ch.swisstopo.', '')}_mosaic_{timestamp}_metadata.json"
-    # main_publish_stac_fsdi.publish_to_stac(filename,timestamp,config.PRODUCT_VHI['product_name'],config.PRODUCT_VHI['geocat_id'],None,asset_title="Metadata")
-    # if is_current == True:
-    #     print("Newest dataset detected: updating CURRENT")
-    #     filename_current = re.sub(r'\d{4}-\d{2}-\d{2}t\d{6}', 'current', filename)
-    #     # Rename the file
-    #     os.rename(filename, filename_current)
-    #     main_publish_stac_fsdi.publish_to_stac(filename_current,timestamp,config.PRODUCT_VHI['product_name'],config.PRODUCT_VHI['geocat_id'],asset_title="Metadata", current=True)
-    #     os.rename(filename_current, filename)
+    filename_metadata = f"{config.PRODUCT_VHI['product_name'].replace('ch.swisstopo.', '')}_mosaic_{timestamp}_metadata.json"
+    main_publish_stac_fsdi.publish_to_stac(filename_metadata, timestamp, config.PRODUCT_VHI['product_name'],
+                                           config.PRODUCT_VHI['geocat_id_vegetation'], None, asset_title="Metadata")
+    if is_current == True:
+        print("Newest dataset detected: updating CURRENT")
+        filename_metadata_current = re.sub(r'\d{4}-\d{2}-\d{2}t\d{6}', 'current', filename_metadata)
+        # Rename the file
+        os.rename(filename_metadata, filename_metadata_current)
+        main_publish_stac_fsdi.publish_to_stac(filename_metadata_current, timestamp, config.PRODUCT_VHI['product_name'],
+                                               config.PRODUCT_VHI['geocat_id_vegetation'], asset_title="Metadata", current=True)
+        os.rename(filename_metadata_current, filename_metadata)
 
     # Upload Thumbnail
     main_publish_stac_fsdi.publish_to_stac(filename_thumbnail, timestamp, config.PRODUCT_VHI['product_name'], 
-                                           config.PRODUCT_VHI['geocat_id_forest'], None, asset_title="Thumbnail")
-    # if is_current == True:
-    #     print("Newest dataset detected: updating CURRENT")
-    #     filename_current = re.sub(r'\d{4}-\d{2}-\d{2}t\d{6}', 'current', filename)
-    #     # Rename the file
-    #     os.rename(filename, filename_current)
-    #     main_publish_stac_fsdi.publish_to_stac(filename_current,timestamp,config.PRODUCT_VHI['product_name'],config.PRODUCT_VHI['geocat_id'],asset_title="Thumbnail", current=True)
-    #     os.rename(filename_current, filename)
+                                           config.PRODUCT_VHI['geocat_id_vegetation'], None, asset_title="Thumbnail")
+    if is_current == True:
+        print("Newest dataset detected: updating CURRENT")
+        filename_thumbnail_current = re.sub(r'\d{4}-\d{2}-\d{2}t\d{6}', 'current', filename_thumbnail)
+        # Rename the file
+        os.rename(filename_thumbnail, filename_thumbnail_current)
+        main_publish_stac_fsdi.publish_to_stac(filename_thumbnail_current, timestamp, config.PRODUCT_VHI['product_name'],
+                                               config.PRODUCT_VHI['geocat_id_vegetation'], asset_title="Thumbnail", current=True)
+        os.rename(filename_thumbnail_current, filename_thumbnail)
 
-    # # Clean up Thumbnailfile
-    # if Path(filename).exists():
-    #         print(f"Cleaning up: {filename}")
-    #         Path(filename).unlink()
+    # Clean up all local files created during this run
+    files_to_cleanup = (
+        [filename_thumbnail]
+        + [f'{filename_forest}.tif']
+        + [f'{filename_vegetation}.tif']
+        + [warnregionfilename_forest + fmt for fmt in warnformats]
+        + [warnregionfilename_vegetation + fmt for fmt in warnformats]
+        + [filename_metadata]
+    )
 
-    # print(f'********* finished processing {product_name} *********')
+    for filepath in files_to_cleanup:
+        if Path(filepath).exists():
+            print(f"Cleaning up: {filepath}")
+            Path(filepath).unlink()
+        else:
+            print(f"Cleanup skipped (not found): {filepath}")
 
+    print(f'********* finished processing {product_name} for {timestamp} *********')
 
-    
 
     ##############################
     # PLOTS
@@ -1088,5 +1222,3 @@ def process_product_vhi(
     # plt.imshow(vhi_vegetation, cmap=vhi_cmap, norm=vhi_norm, interpolation='nearest') #, vmin=0, vmax=100
     # plt.colorbar()
     # plt.show()
-
-    # return f"VHI: Successfully processed {day_to_process}."

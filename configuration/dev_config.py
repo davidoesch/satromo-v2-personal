@@ -35,7 +35,7 @@ OVERVIEW_LAKES = os.path.join("assets", "overview_lakes_2056.gpkg")
 OVERVIEW_RIVERS = os.path.join("assets", "overview_rivers_2056.gpkg")
 
 DSM_FILE=os.path.join("local_assets","DSM_10m_EPSG2056_CH_clipped_10km_extended_9999.tif")
-GPU_ENFORCEMENT = True # Set to True to enforce GPU usage for AROSICS, False to allow CPU fallback (only for testing purposes)
+GPU_ENFORCEMENT = False # Set to True to enforce GPU usage for AROSICS, False to allow CPU fallback (only for testing purposes)
 
 ## PRODUCTS, INDICES and custom COLLECTIONS ###
 # ---------------------------
@@ -98,7 +98,7 @@ PRODUCT_VHI = {
     "LST_reference_data": "s3://s3-topo-satromo-prod/data/LST_REFERENCE/2004-2020_LST_MSGch02/",
     "LST_current_data": "https://data.geo.admin.ch/ch.meteoschweiz.landoberflaechentemperatur",
     "step1_collection": "https://sys-data.int.bgdi.ch/#/collections/ch.swisstopo.swisseo_vhi_v200",
-    #"step0_collection": "https://sys-data.int.bgdi.ch/#/collections/ch.swisstopo.swisseo_s2-sr_v200"
+    #"step0_collection": "https://data.geo.admin.ch/#/collections/ch.swisstopo.swisseo_s2-sr_v200"
 }
 
 # MSG – MeteoSchweiz: only used for repreocessing
