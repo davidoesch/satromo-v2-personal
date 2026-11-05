@@ -1,4 +1,4 @@
-[![GitHub commit](https://img.shields.io/github/last-commit/swisstopo/topo-satromo-v2)](https://github.com/swisstopo/topo-satromo-v2/commits/main)[![Python 3.12](https://img.shields.io/badge/python-3.12.13-blue?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-31213/)[![Python 3.11](https://img.shields.io/badge/python-3.11.3-blue?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3113/)[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/swisstopo/topo-satromo-v2)
+[![GitHub commit](https://img.shields.io/github/last-commit/swisstopo/topo-satromo-v2)](https://github.com/swisstopo/topo-satromo-v2/commits/main)[![Python 3.12](https://img.shields.io/badge/python-3.12.13-blue?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-31213/)[![Python 3.11](https://img.shields.io/badge/python-3.11.3-blue?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3113/)[![Ask DeepWiki](https://img.shields.io/badge/DeepWiki-Ask-blue)](https://deepwiki.com/swisstopo/topo-satromo-v2)
 # topo-satromo-v2
 
 **Erdbeobachtungs-SAtellitendaten fürs TRockenheitsMOnitoring (SATROMO) — Version 2**
@@ -384,7 +384,6 @@ python satromo_processor.py my_config.py 2024-06-12 --force
 
 ```python
 PRODUCT_MY_NEW = {
-    "image_collection": "...",
     "temporal_coverage": 1,
     "product_name": "ch.swisstopo.swisseo_my_product",
     "step0_collection": "https://...",  # STAC URL or s3://...
