@@ -171,7 +171,7 @@ def export(raster_url, shape_file, filename, dateISO8601, missing_values, no_dat
             ['gpio', 'convert', _gpkg_tmp, filename + '.parquet'],
             capture_output=True,
             text=True
-        )
+        )      
         if result.returncode != 0:
             # Surface gpio's real error (e.g. DuckDB spatial extension missing)
             print(f"WARNING: gpio convert failed (exit {result.returncode}) for {filename}.parquet")
