@@ -52,16 +52,16 @@ jobs:
             
       - name: Check S2 data availability and update CSV
         id: check
-        run: python check_s2_sr.py $(date +%Y-%m-%d) 30 prod_config.py
+        run: python check_s2_sr.py $(date +%Y-%m-%d) 30 dev_config.py
         #run: python check_s2_sr.py 2026-08-05 30 prod_config.py
 
       - name: Check VHI entries, update CSV and find VHI to reprocess
         id: check-vhi
-        run: python check_vhi.py $(date +%Y-%m-%d) 30 prod_config.py
+        run: python check_vhi.py $(date +%Y-%m-%d) 30 dev_config.py
 
       - name: Publish acquisitionplan.csv and step0_empty_assets.csv
         id: PublishAcquiEmpty
-        run: python main_functions/util_upload_collection_asset.py  prod_config.py
+        run: python main_functions/util_upload_collection_asset.py  dev_config.py
         env:
           FSDI_STAC_USER: ${{ secrets.FSDI_STAC_USER }}
           FSDI_STAC_PASSWORD: ${{ secrets.FSDI_STAC_PASSWORD }}
@@ -186,7 +186,7 @@ jobs:
       # rerun-failures and reported in the last step "Report failed dates".
       - name: Run rerun processor
         id: rerun
-        run: python rerun.py prod_config.py
+        run: python rerun.py dev_config.py
         env:
           VHI_REPROCESS_DATES: ${{ needs.check-and-update.outputs.vhi-reprocess-dates }}
           S3_SECRETS: ${{ secrets.S3_SECRETS }}
@@ -196,7 +196,7 @@ jobs:
 
       - name: Publish acquisitionplan.csv and step0_empty_assets.csv
         id: PublishAcquiEmpty2b
-        run: python main_functions/util_upload_collection_asset.py  prod_config.py
+        run: python main_functions/util_upload_collection_asset.py  dev_config.py
         env:
           FSDI_STAC_USER: ${{ secrets.FSDI_STAC_USER }}
           FSDI_STAC_PASSWORD: ${{ secrets.FSDI_STAC_PASSWORD }}
